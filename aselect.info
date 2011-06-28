@@ -1,0 +1,6 @@
+; $Id: aselect.info,v 0.1 2010/01/19 08:36:57 rjelierse Exp $
+name = ASelect
+description = "Provides login with ASelect for Single Sign-on."
+version = 6.x-1.1
+package = Authentication
+core = 6.x

@@ -1,0 +1,333 @@
+<?php
+// $Id: aselect.module,v 1.1 2010/11/01 17:39:57 rjelierse Exp $
+
+/**
+ * @file ASelect module
+ * Implement ASelect support for Drupal.
+ */
+
+/**
+ * Implementation of hook_menu.
+ */
+function aselect_menu () {
+  $items = array();
+  // 403 Landing page
+  $items['aselect/unauthorized'] = array(
+    'title' => t('Unauthorized access'),
+    'page callback' => 'aselect_unauthorized_page',
+    'access callback' => 'aselect_true',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['aselect/landing'] = array(
+    'title' => 'ASelect forwarder',
+    'page callback' => 'aselect_login_forward',
+    'access callback' => 'aselect_true',
+    'type' => MENU_CALLBACK
+  );
+
+  // Prepare ASelect SSO
+  $items['aselect/prepare'] = array(
+    'title' => 'ASelect login',
+    'page callback' => 'aselect_login_prepare',
+    'access callback' => 'user_is_anonymous',
+    'type' => MENU_CALLBACK
+  );
+
+  // Landing page after authentication.
+  $items['aselect/check'] = array(
+    'title' => 'ASelect authenticate',
+    'page callback' => 'aselect_login_check',
+    'access callback' => 'user_is_anonymous',
+    'type' => MENU_CALLBACK
+  );
+
+  // Settings page.
+  $items['admin/settings/aselect'] = array(
+    'title' => 'ASelect',
+    'description' => 'Set options for ASelect login.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array ('aselect_settings_form'),
+    'access arguments' => array ('administer aselect')
+  );
+
+  return $items;
+}
+
+/**
+ * Implementation of hook_menu_alter.
+ * 
+ * - Disable password reset.
+ */
+function aselect_menu_alter(&$items) {
+  if (variable_get('aselect_disable_password_reset', FALSE)) {
+    $items['user/password']['access callback'] = FALSE;
+  }
+}
+
+/**
+ * Implementation of hook_perm.
+ */
+function aselect_perm () {
+  return array ('administer aselect');
+}
+
+/**
+ * Implementation of hook_user.
+ */
+function aselect_user ($op, &$edit, &$account, $category = NULL) {
+  switch ($op) {
+    case 'load':
+      if ($GLOBALS['user']->uid === $account->uid) {
+        $account->aselect = aselect_attributes();
+      }
+      break;
+
+    case 'logout':
+      // Remove login information for this domain
+      setcookie ('aselectuid', FALSE, 0, '/');
+      unset ($_COOKIE['aselectuid']);
+      setcookie ('aselectattributes', FALSE, 0, '/');
+      unset ($_COOKIE['aselectattributes']);
+      setcookie ('aselectorganization', FALSE, 0, '/');
+      unset ($_COOKIE['aselectorganization']);
+      setcookie ('aselectticket', FALSE, 0, '/');
+      unset ($_COOKIE['aselectticket']);
+      // Kill ASelect session
+      $logout_path = url('login/', array('absolute' => TRUE, 'query' => array('request' => 'aselect_kill_ticket')));
+      drupal_goto($logout_path);
+      break;
+  }
+}
+
+/**
+ * Implementation of hook_form_alter.
+ *  - Add ASelect link to login forms.
+ */
+function aselect_form_alter (&$form, $form_state, $form_id) {
+  global $user;
+
+  if ($form_id == 'user_login_block' || $form_id == 'user_login') {
+    $items = array ();
+    $items[] = l(t('Log in with ASelect'), 'aselect/prepare', array ('attributes' => array ('title' => t('Log in using your ASelect identity.'))));
+    $form['aselect_links'] = array (
+    '#value' => theme ('item_list', $items),
+    '#weight' => 1
+    );
+  }
+}
+
+function aselect_login_forward() {
+  if (isset($_GET['path'])) {
+    $path = $_GET['path'];
+    $item = menu_get_item($path);
+    if ($item === FALSE) {
+      drupal_set_message(t('The path supplied does not exist.'), 'error');
+      drupal_goto();
+    }
+    elseif ($item['access']) {
+      drupal_goto($path);
+    }
+    elseif (user_is_anonymous()) {
+      $login_path = url('aselect/prepare', array('query' => array('return_path' => $path)));
+      drupal_goto($login_path);
+    }
+    else {
+      drupal_set_message(t('You do not have permissions to view this page.'), 'error');
+      drupal_goto();
+    }
+  }
+  else {
+    drupal_goto();
+  }
+}
+
+/**
+ * Prepares the environment for starting an ASelect session.
+ *  - Sets a return path for after the authentication process.
+ *  - Looks up the location of this module and sets the path
+ *    to the ASelect agent.
+ *  - Sends the user to the ASelect agent.
+ *
+ */
+function aselect_login_prepare() {
+  $query = array();
+  if (isset($_GET['return_path'])) {
+    $return_path = $_GET['return_path'];
+    if (user_is_logged_in() && menu_valid_path(array('link_path' => $return_path))) {
+      drupal_goto($return_path);
+    }
+    $query['return_path'] = $return_path;
+  }
+  // Returns the absolute URL to the postprocessing function
+  // for the ASelect login.
+  $return_path = url('aselect/check', array('absolute' => TRUE, 'query' => $query));
+
+  // Appearantly the A-Select filter malfunctions on any path that ends in
+  // /login, except for the root /login
+  // Kind of strange that it still hijacks all paths regardless.
+  // Also, this requires us to install files outside of the sites-dir.
+  $login_path = url('login', array('absolute' => TRUE));
+
+  // Set a cookie for the external files, so it knows where to redirect to.
+  setcookie('aselectreturnpath', $return_path, 0, '/', $_SERVER['HTTP_HOST']);
+
+  // Work the magic.
+  drupal_goto($login_path);
+}
+
+/**
+ * This function handles the landing page after the user has logged on with
+ * ASelect. It checks for the correct cookies and parses the attributes that may
+ * have been sent along.
+ *
+ * @todo Find a method to return the user to the page where the Login link
+ *       was clicked.
+ */
+function aselect_login_check () {
+  if (empty($_COOKIE['aselectuid'])) {
+    drupal_set_message(t('ASelect login was cancelled.'), 'message');
+    drupal_goto();
+    return;
+  }
+
+  $attributes = aselect_attributes();
+
+  // Get the configuration value for the matching token.
+  $token = variable_get('aselect_login_token', 'aselectuid');
+
+  // Get the identity of the user.
+  $identity = user_external_load($attributes[$token]);
+  // Fallback to aselectuid if required.
+  if (!is_object($identity) && $token == 'aselectuid' && variable_get('aselect_fallback_aselectuid', TRUE)) {
+    $identity = user_external_load($attributes['aselectuid']);
+  }
+
+  // Load the user profile based on the matched identity.
+  if (is_object($identity)) {
+    drupal_set_message(t('Login successful.'));
+    user_external_login($identity);
+  }
+  // Create a new user when no match is found.
+  elseif (variable_get('aselect_create_new_user_if_unmatched', FALSE)) {
+    drupal_set_message(t('Could not find a matching user. Attempting to create a new account.'));
+    user_external_login_register($attributes['aselectuid'], 'aselect');
+  }
+  // Fallback to a defined user when no match found.
+  elseif (variable_get('aselect_fallback_uid', 0) > 0) {
+    $account = new stdObject();
+    $account->uid = variable_get('aselect_fallback_uid', 0);
+    drupal_set_message(t('Could not find a matching user. Logged in as elevated guest.'));
+    user_external_login($account);
+  }
+  // Login failed.
+  else {
+    drupal_set_message(t('The credentials provided could not be matched to an (existing) user. Login failed.'), 'error');
+  }
+
+  if (isset($_GET['return_path'])) {
+    $return_path = $_GET['return_path'];
+    if (menu_valid_path(array('link_path' => $return_path))) {
+      drupal_goto($return_path);
+    }
+  }
+
+  drupal_goto();
+}
+
+/**
+ * ASelect module settings form.
+ */
+function aselect_settings_form() {
+  $form = array(
+    'aselect_login' => array(
+      '#type' => 'fieldset',
+      '#title' => t('Authentication'),
+      'aselect_login_token' => array(
+        '#type' => 'textfield',
+        '#title' => t('ASelect token'),
+        '#default_value' => variable_get('aselect_login_token', 'aselectuid'),
+        '#maxlength' => 128,
+        '#description' => t('The token to match ASelect logins against using the AuthMap information. By default this is the uid returned by ASelect, but you might want to use one of the custom attributes returned by ASelect instead.'),
+        '#required' => TRUE
+      ),
+      'aselect_fallback_aselectuid' => array(
+        '#type' => 'checkbox',
+        '#title' => t('Fallback to ASelect UID when the above token does not match.'),
+        '#default_value' => variable_get('aselect_fallback_aselectuid', TRUE),
+      ),
+      'aselect_fallback_uid' => array(
+        '#type' => 'textfield',
+        '#title' => t('Fallback Drupal User ID'),
+        '#default_value' => variable_get('aselect_fallback_uid', 0),
+        '#description' => t('Use this Drupal user to fallback to if a matching user could not be found.'),
+        '#required' => TRUE,
+      ),
+      'aselect_create_new_user_if_unmatched' => array(
+        '#type' => 'checkbox',
+        '#title' => t('Create a new user if no match is found.'),
+        '#default_value' => variable_get('aselect_create_new_user_if_unmatched', FALSE),
+        '#description' => t('When no existing user could be matched, create a new Drupal user.'),
+      ),
+    ),
+    'aselect_user' => array(
+      '#type' => 'fieldset',
+      '#title' => t('User management'),
+      'aselect_disable_password_reset' => array(
+        '#type' => 'checkbox',
+        '#title' => t('Disable password reset for Drupal users'),
+        '#default_value' => variable_get('aselect_disable_password_reset', FALSE),
+        '#description' => t('Disable the password reset page, effectively removing the option for a Drupal user to reset it\'s password. This can be useful if you want to enforce external login.'),
+      ),
+    ),
+  );
+
+  return system_settings_form($form);
+}
+
+function aselect_attributes() {
+  $attributes = array();
+  if (empty($_COOKIE['aselectuid'])) {
+    return $attributes;
+  }
+  
+  // Add the ASelect UID to the attributes-list, for easier processing.
+  $attributes['aselectuid'] = $_COOKIE['aselectuid'];
+
+  // Parse other attributes provided by the ASelect Agent.
+  $attr = explode(',', $_COOKIE['aselectattributes']);
+
+  if (!is_array($attr)) {
+    return $attributes;
+  }
+
+  foreach ($attr as $attribute) {
+    $list = explode('=', $attribute);
+    $attributes[$list[0]] = $list[1];
+  }
+  
+  return $attributes;
+}
+
+function aselect_unauthorized_page() {
+  if (user_is_anonymous()) {
+    // Build the url for login.
+    $return_path = str_replace(base_path(), '', $_SERVER['HTTP_REFERER']);
+    if (!empty($return_path)) {
+      $query = array('return_path' => $return_path);
+    }
+    else {
+      $query = array();
+    }
+    $link = url('aselect/prepare', array('query' => $query));
+
+    return sprintf('<p>%s</p>', t('You need to <a href="@aselect-url">log in</a> to access this page.', array('@aselect-url' => $link)));
+  }
+  else {
+    return sprintf('<p>%s</p>', t('You are not authorized to access this page.'));
+  }
+}
+
+function aselect_true() {
+  return TRUE;
+}

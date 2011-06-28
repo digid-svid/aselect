@@ -1,0 +1,14 @@
+<?php
+
+function aselect_install ()
+{
+}
+
+function aselect_uninstall ()
+{
+	variable_del('aselect_login_token');
+  variable_del('aselect_fallback_aselectuid');
+  variable_del('aselect_fallback_uid');
+  variable_del('aselect_create_new_user_if_unmatched');
+  variable_del('aselect_disable_password_reset');
+}
