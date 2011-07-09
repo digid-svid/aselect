@@ -56,12 +56,29 @@ function aselect_menu () {
 
 /**
  * Implementation of hook_menu_alter.
- * 
+ *
  * - Disable password reset.
  */
 function aselect_menu_alter(&$items) {
   if (variable_get('aselect_disable_password_reset', FALSE)) {
     $items['user/password']['access callback'] = FALSE;
+  }
+
+  if (variable_get('aselect_disable_user_link', TRUE)) {
+    // Assure user/login is still accessible
+    $items['user/login'] += array(
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('user_login'),
+        'type' => MENU_CALLBACK,
+    );
+    path_set_alias('user/login', 'user/signin');
+    // Reroute user to the ASelect Login.
+    $items['user'] = array(
+        'title' => 'ASelect login',
+        'page callback' => 'aselect_login_prepare',
+        'access callback' => 'user_is_anonymous',
+        'type' => MENU_CALLBACK,
+    );
   }
 }
 
@@ -94,7 +111,7 @@ function aselect_user ($op, &$edit, &$account, $category = NULL) {
       setcookie ('aselectticket', FALSE, 0, '/');
       unset ($_COOKIE['aselectticket']);
       // Kill ASelect session
-      $logout_path = url('login/', array('absolute' => TRUE, 'query' => array('request' => 'aselect_kill_ticket')));
+      $logout_path = url('login/', array('absolute' => TRUE, 'query' => array('request' => 'aselect_kill_ticket'), 'base_url' => 'http://' . $_SERVER['HTTP_HOST']));
       drupal_goto($logout_path);
       break;
   }
@@ -118,8 +135,8 @@ function aselect_form_alter (&$form, $form_state, $form_id) {
 }
 
 function aselect_login_forward() {
-  if (isset($_GET['path'])) {
-    $path = $_GET['path'];
+  if (isset($_GET['destination'])) {
+    $path = $_GET['destination'];
     $item = menu_get_item($path);
     if ($item === FALSE) {
       drupal_set_message(t('The path supplied does not exist.'), 'error');
@@ -129,7 +146,7 @@ function aselect_login_forward() {
       drupal_goto($path);
     }
     elseif (user_is_anonymous()) {
-      $login_path = url('aselect/prepare', array('query' => array('return_path' => $path)));
+      $login_path = url('aselect/prepare', array('query' => array('destination' => $path)));
       drupal_goto($login_path);
     }
     else {
@@ -152,12 +169,12 @@ function aselect_login_forward() {
  */
 function aselect_login_prepare() {
   $query = array();
-  if (isset($_GET['return_path'])) {
-    $return_path = $_GET['return_path'];
+  if (isset($_GET['destination'])) {
+    $return_path = $_GET['destination'];
     if (user_is_logged_in() && menu_valid_path(array('link_path' => $return_path))) {
       drupal_goto($return_path);
     }
-    $query['return_path'] = $return_path;
+    $query['destination'] = $return_path;
   }
   // Returns the absolute URL to the postprocessing function
   // for the ASelect login.
@@ -167,7 +184,7 @@ function aselect_login_prepare() {
   // /login, except for the root /login
   // Kind of strange that it still hijacks all paths regardless.
   // Also, this requires us to install files outside of the sites-dir.
-  $login_path = url('login', array('absolute' => TRUE));
+  $login_path = url('login', array('absolute' => TRUE, 'base_url' => 'http://' . $_SERVER['HTTP_HOST']));
 
   // Set a cookie for the external files, so it knows where to redirect to.
   setcookie('aselectreturnpath', $return_path, 0, '/', $_SERVER['HTTP_HOST']);
@@ -210,8 +227,16 @@ function aselect_login_check () {
   }
   // Create a new user when no match is found.
   elseif (variable_get('aselect_create_new_user_if_unmatched', FALSE)) {
-    drupal_set_message(t('Could not find a matching user. Attempting to create a new account.'));
+    drupal_set_message(t('Could not find a matching user. A new account will be created.'));
     user_external_login_register($attributes['aselectuid'], 'aselect');
+    $uid = $GLOBALS['user']->uid;
+    $query = array();
+    if (isset($_GET['destination'])) {
+      $query['destination'] = $_GET['destination'];
+    }
+    drupal_set_message(t('Please update the profile that has been created for you. At least enter an e-mail address so you can be contacted.'));
+    $edit_path = url("user/$uid/edit", array('query' => $query));
+    drupal_goto("user/$uid/edit", $query);
   }
   // Fallback to a defined user when no match found.
   elseif (variable_get('aselect_fallback_uid', 0) > 0) {
@@ -225,8 +250,8 @@ function aselect_login_check () {
     drupal_set_message(t('The credentials provided could not be matched to an (existing) user. Login failed.'), 'error');
   }
 
-  if (isset($_GET['return_path'])) {
-    $return_path = $_GET['return_path'];
+  if (isset($_GET['destination'])) {
+    $return_path = $_GET['destination'];
     if (menu_valid_path(array('link_path' => $return_path))) {
       drupal_goto($return_path);
     }
@@ -273,6 +298,11 @@ function aselect_settings_form() {
     'aselect_user' => array(
       '#type' => 'fieldset',
       '#title' => t('User management'),
+      'aselect_disable_user_link' => array(
+        '#type' => 'checkbox',
+        '#title' => t('Forward %path to ASelect login', array('%path' => 'user')),
+        '#default_value' => variable_get('aselect_disable_user_link', TRUE),
+      ),
       'aselect_disable_password_reset' => array(
         '#type' => 'checkbox',
         '#title' => t('Disable password reset for Drupal users'),
@@ -290,7 +320,7 @@ function aselect_attributes() {
   if (empty($_COOKIE['aselectuid'])) {
     return $attributes;
   }
-  
+
   // Add the ASelect UID to the attributes-list, for easier processing.
   $attributes['aselectuid'] = $_COOKIE['aselectuid'];
 
@@ -305,7 +335,7 @@ function aselect_attributes() {
     $list = explode('=', $attribute);
     $attributes[$list[0]] = $list[1];
   }
-  
+
   return $attributes;
 }
 
