@@ -216,7 +216,7 @@ function aselect_login_check () {
   // Get the identity of the user.
   $identity = user_external_load($attributes[$token]);
   // Fallback to aselectuid if required.
-  if (!is_object($identity) && $token == 'aselectuid' && variable_get('aselect_fallback_aselectuid', TRUE)) {
+  if ($identity === 0 && $token != 'aselectuid' && variable_get('aselect_fallback_aselectuid', TRUE)) {
     $identity = user_external_load($attributes['aselectuid']);
   }
 
