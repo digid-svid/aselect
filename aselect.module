@@ -86,7 +86,7 @@ function aselect_menu_alter(&$items) {
  * Implementation of hook_perm.
  */
 function aselect_perm () {
-  return array ('administer aselect');
+  return array ('administer aselect', 'view aselect data');
 }
 
 /**
@@ -114,6 +114,31 @@ function aselect_user ($op, &$edit, &$account, $category = NULL) {
       $logout_path = url('login/', array('absolute' => TRUE, 'query' => array('request' => 'aselect_kill_ticket'), 'base_url' => 'http://' . $_SERVER['HTTP_HOST']));
       drupal_goto($logout_path);
       break;
+
+    case 'view':
+      if (user_access('view aselect data')) {
+        $result = db_query("SELECT authname FROM {authmap} WHERE module = 'aselect' AND uid = %d", $account->uid);
+        if ($result === FALSE) {
+          return;
+        }
+
+        $authnames = array();
+
+        while (($identity = db_fetch_array($result)) !== FALSE) {
+          $authnames[] = $identity['authname'];
+        }
+
+        if (!empty($authnames)) {
+          $account->content['aselect'] = array(
+            '#type' => 'user_profile_category',
+            '#title' => t('ASelect identities'),
+            'identities' => array(
+              '#type' => 'markup',
+              '#value' => theme('item_list', $authnames),
+            ),
+          );
+        }
+      }
   }
 }
 
