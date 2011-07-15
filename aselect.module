@@ -222,8 +222,10 @@ function aselect_login_check () {
 
   // Load the user profile based on the matched identity.
   if (is_object($identity)) {
-    drupal_set_message(t('Login successful.'));
-    user_external_login($identity);
+    $identity->aselectuid = $attributes['aselectuid'];
+    if (user_external_login($identity)) {
+      drupal_set_message(t('Login successful.'));
+    }
   }
   // Create a new user when no match is found.
   elseif (variable_get('aselect_create_new_user_if_unmatched', FALSE)) {
