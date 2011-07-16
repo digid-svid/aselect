@@ -1,13 +1,20 @@
 <?php
-// $Id: aselect.module,v 1.1 2010/11/01 17:39:57 rjelierse Exp $
+// $Id$
 
 /**
- * @file ASelect module
- * Implement ASelect support for Drupal.
+ * @file aselect.module
+ *   Implement ASelect support for Drupal.
+ *
+ * @author Raymond Jelierse
  */
 
 /**
- * Implementation of hook_menu.
+ * Key for new ASelect identities
+ */
+define('ASELECT_NEW_IDENTITY', 'aselect_new');
+
+/**
+ * Implements hook_menu()
  */
 function aselect_menu () {
   $items = array();
@@ -15,14 +22,14 @@ function aselect_menu () {
   $items['aselect/unauthorized'] = array(
     'title' => t('Unauthorized access'),
     'page callback' => 'aselect_unauthorized_page',
-    'access callback' => 'aselect_true',
+    'access callback' => TRUE,
     'type' => MENU_CALLBACK,
   );
 
   $items['aselect/landing'] = array(
     'title' => 'ASelect forwarder',
     'page callback' => 'aselect_login_forward',
-    'access callback' => 'aselect_true',
+    'access callback' => TRUE,
     'type' => MENU_CALLBACK
   );
 
@@ -55,9 +62,106 @@ function aselect_menu () {
 }
 
 /**
- * Implementation of hook_menu_alter.
+ * Implements hook_perm()
+ */
+function aselect_perm () {
+  return array (
+    'administer aselect',
+    'view aselect identities',
+    'edit aselect identities',
+  );
+}
+
+/**
+ * Implements hook_theme()
+ */
+function aselect_theme() {
+  return array(
+    'aselect_identities_table' => array(
+      'arguments' => array('form' => NULL),
+    ),
+  );
+}
+
+/**
+ * Implements hook_user()
+ */
+function aselect_user ($op, &$edit, &$account, $category = 'account') {
+  switch ($op) {
+    case 'form':
+      return aselect_user_form($account, $category);
+
+    case 'validate':
+      aselect_user_form_validate(&$edit);
+      dpm($edit, 'user-edit-validate');
+      break;
+
+    case 'submit':
+      aselect_user_form_submit(&$edit);
+      dpm($edit, 'user-edit-submit');
+      break;
+
+    case 'load':
+      if ($GLOBALS['user']->uid === $account->uid) {
+        $account->aselect = aselect_get_attributes();
+      }
+      break;
+
+    case 'logout':
+      // Remove login information for this domain
+      setcookie ('aselectuid', FALSE, 0, '/');
+      unset ($_COOKIE['aselectuid']);
+      setcookie ('aselectattributes', FALSE, 0, '/');
+      unset ($_COOKIE['aselectattributes']);
+      setcookie ('aselectorganization', FALSE, 0, '/');
+      unset ($_COOKIE['aselectorganization']);
+      setcookie ('aselectticket', FALSE, 0, '/');
+      unset ($_COOKIE['aselectticket']);
+      // Kill ASelect session
+      $logout_path = url('login/', array('absolute' => TRUE, 'query' => array('request' => 'aselect_kill_ticket'), 'base_url' => 'http://' . $_SERVER['HTTP_HOST']));
+      drupal_goto($logout_path);
+      break;
+
+    case 'view':
+      if (user_access('view aselect identities')) {
+        $identities = aselect_get_identities($account);
+        if (!empty($identities)) {
+          $account->content['aselect'] = array(
+            '#type' => 'user_profile_category',
+            '#title' => t('ASelect identities'),
+            'identities' => array(
+              '#type' => 'markup',
+              '#value' => theme('item_list', $identities),
+            ),
+          );
+        }
+      }
+  }
+}
+
+/**
+ * Implements hook_form_alter()
  *
- * - Disable password reset.
+ * Add 'Log in with ASelect' link to user_login and user_login_blocks forms.
+ */
+function aselect_form_alter (&$form, $form_state, $form_id) {
+  global $user;
+
+  if ($form_id == 'user_login_block' || $form_id == 'user_login') {
+    $items = array ();
+    $items[] = l(t('Log in with ASelect'), 'aselect/prepare', array ('attributes' => array ('title' => t('Log in using your ASelect identity.'))));
+    $form['aselect_links'] = array (
+    '#value' => theme ('item_list', $items),
+    '#weight' => 1
+    );
+  }
+}
+
+/**
+ * Implements hook_menu_alter()
+ *
+ *   - Remove 'user/password' if configured to do so.
+ *   - Forward 'user' to ASelect login, alias 'user/login' with 'user/signin'.
  */
 function aselect_menu_alter(&$items) {
   if (variable_get('aselect_disable_password_reset', FALSE)) {
@@ -83,82 +187,9 @@ function aselect_menu_alter(&$items) {
 }
 
 /**
- * Implementation of hook_perm.
+ * Performs checks to see which actions are needed before a user can view
+ * the page that has been set in $_GET[destination] and acts accordingly.
  */
-function aselect_perm () {
-  return array ('administer aselect', 'view aselect data');
-}
-
-/**
- * Implementation of hook_user.
- */
-function aselect_user ($op, &$edit, &$account, $category = NULL) {
-  switch ($op) {
-    case 'load':
-      if ($GLOBALS['user']->uid === $account->uid) {
-        $account->aselect = aselect_attributes();
-      }
-      break;
-
-    case 'logout':
-      // Remove login information for this domain
-      setcookie ('aselectuid', FALSE, 0, '/');
-      unset ($_COOKIE['aselectuid']);
-      setcookie ('aselectattributes', FALSE, 0, '/');
-      unset ($_COOKIE['aselectattributes']);
-      setcookie ('aselectorganization', FALSE, 0, '/');
-      unset ($_COOKIE['aselectorganization']);
-      setcookie ('aselectticket', FALSE, 0, '/');
-      unset ($_COOKIE['aselectticket']);
-      // Kill ASelect session
-      $logout_path = url('login/', array('absolute' => TRUE, 'query' => array('request' => 'aselect_kill_ticket'), 'base_url' => 'http://' . $_SERVER['HTTP_HOST']));
-      drupal_goto($logout_path);
-      break;
-
-    case 'view':
-      if (user_access('view aselect data')) {
-        $result = db_query("SELECT authname FROM {authmap} WHERE module = 'aselect' AND uid = %d", $account->uid);
-        if ($result === FALSE) {
-          return;
-        }
-
-        $authnames = array();
-
-        while (($identity = db_fetch_array($result)) !== FALSE) {
-          $authnames[] = $identity['authname'];
-        }
-
-        if (!empty($authnames)) {
-          $account->content['aselect'] = array(
-            '#type' => 'user_profile_category',
-            '#title' => t('ASelect identities'),
-            'identities' => array(
-              '#type' => 'markup',
-              '#value' => theme('item_list', $authnames),
-            ),
-          );
-        }
-      }
-  }
-}
-
-/**
- * Implementation of hook_form_alter.
- *  - Add ASelect link to login forms.
- */
-function aselect_form_alter (&$form, $form_state, $form_id) {
-  global $user;
-
-  if ($form_id == 'user_login_block' || $form_id == 'user_login') {
-    $items = array ();
-    $items[] = l(t('Log in with ASelect'), 'aselect/prepare', array ('attributes' => array ('title' => t('Log in using your ASelect identity.'))));
-    $form['aselect_links'] = array (
-    '#value' => theme ('item_list', $items),
-    '#weight' => 1
-    );
-  }
-}
-
 function aselect_login_forward() {
   if (isset($_GET['destination'])) {
     $path = $_GET['destination'];
@@ -222,9 +253,6 @@ function aselect_login_prepare() {
  * This function handles the landing page after the user has logged on with
  * ASelect. It checks for the correct cookies and parses the attributes that may
  * have been sent along.
- *
- * @todo Find a method to return the user to the page where the Login link
- *       was clicked.
  */
 function aselect_login_check () {
   if (empty($_COOKIE['aselectuid'])) {
@@ -233,7 +261,7 @@ function aselect_login_check () {
     return;
   }
 
-  $attributes = aselect_attributes();
+  $attributes = aselect_get_attributes();
 
   // Get the configuration value for the matching token.
   $token = variable_get('aselect_login_token', 'aselectuid');
@@ -342,7 +370,14 @@ function aselect_settings_form() {
   return system_settings_form($form);
 }
 
-function aselect_attributes() {
+/**
+ * Get a list of attributes that have been set by the ASelect Agent after the
+ * user has successfully authenticated.
+ *
+ * @return
+ *   The attributes that are available from the ASelect Agent after login.
+ */
+function aselect_get_attributes() {
   $attributes = array();
   if (empty($_COOKIE['aselectuid'])) {
     return $attributes;
@@ -366,6 +401,12 @@ function aselect_attributes() {
   return $attributes;
 }
 
+/**
+ * Handler for the Drupal Unauthorized page.
+ *
+ * @return
+ *   The message to the user.
+ */
 function aselect_unauthorized_page() {
   if (user_is_anonymous()) {
     // Build the url for login.
@@ -385,6 +426,177 @@ function aselect_unauthorized_page() {
   }
 }
 
-function aselect_true() {
-  return TRUE;
+/**
+ * Get the ASelect identities that are available for the user given in $account.
+ *
+ * @param $account
+ *   The user for which to look up the current ASelect identities.
+ * @return
+ *   An array of ASelect identities.
+ */
+function aselect_get_identities($account) {
+  $result = db_query("SELECT authname, module FROM {authmap} WHERE module LIKE 'aselect%' AND uid = %d", $account->uid);
+  if ($result === FALSE) {
+    return FALSE;
+  }
+
+  $authnames = array();
+
+  while (($identity = db_fetch_array($result)) !== FALSE) {
+    $authnames[$identity['module']] = $identity['authname'];
+  }
+
+  return $authnames;
+}
+
+/**
+ * User edit form for ASelect related information for the given $account.
+ *
+ * @param $account
+ *   The account to edit
+ * @param $category
+ *   The category that is being edited
+ * @return
+ *   The form with ASelect user settings
+ */
+function aselect_user_form($account, $category = 'account') {
+  if ($category === 'account' && user_access('edit aselect identities')) {
+    $identities = aselect_get_identities($account);
+
+    $form = array(
+      'aselect_identities' => array(
+        '#type' => 'fieldset',
+        '#title' => t('ASelect identities'),
+        '#description' => t('List of avaialble ASelect identities. Selected identities will be removed when the account is saved. You can add a new identity using the last row of the table.'),
+        '#theme' => 'aselect_identities_table',
+      ),
+    );
+
+    $authmaps = array();
+
+    // List existing identities
+    foreach ($identities as $authfield => $authname) {
+      list($module, $identity) = explode('_', $authfield, 2);
+      $authmaps[$authfield] = '';
+      // ASelect identity name
+      $form['aselect_identities']['identity'][$authfield] = array(
+        '#value' => $identity,
+      );
+      // ASelect identity value
+      $form['aselect_identities']['authname'][$authfield] = array(
+        '#type' => 'textfield',
+        '#default_value' => $authname,
+      );
+    }
+
+    $form['aselect_identities']['authmap_remove'] = array(
+      '#type' => 'checkboxes',
+      '#options' => $authmaps,
+    );
+
+    // Fields to add new identity
+    $form['aselect_identities'][ASELECT_NEW_IDENTITY . '_identity'] = array(
+      '#type' => 'textfield',
+      '#size' => 40,
+      '#weight' => 50,
+    );
+    $form['aselect_identities'][ASELECT_NEW_IDENTITY . '_authname'] = array(
+      '#type' => 'textfield',
+      '#size' => 40,
+      '#weight' => 50,
+    );
+
+    return $form;
+  }
+  else {
+    return array();
+  }
+}
+
+/**
+ * Validate the user input for the ASelect user settings
+ *
+ * @param $form_state
+ *   The current state of the edit form
+ */
+function aselect_user_form_validate(&$form_state) {
+  $form_state['authmap_remove'] = array_filter($form_state['authmap_remove']);
+  // Merge new identity into ASelect authmap, if set
+  if (!empty($form_state[ASELECT_NEW_IDENTITY . '_identity'])) {
+    if (preg_match('#^([A-Za-z0-9_]+)$#', $form_state[ASELECT_NEW_IDENTITY . '_identity'])) {
+      if (!empty($form_state[ASELECT_NEW_IDENTITY . '_authname'])) {
+        $form_state['aselect_' . $form_state[ASELECT_NEW_IDENTITY . '_identity']] = $form_state[ASELECT_NEW_IDENTITY . '_authname'];
+        // Clean up $edit
+        unset($form_state[ASELECT_NEW_IDENTITY . '_identity']);
+        unset($form_state[ASELECT_NEW_IDENTITY . '_authname']);
+      }
+      else {
+        form_set_error(ASELECT_NEW_IDENTITY . '_authname', t('The ASelect identity cannot be empty. Please enter a value for the identity.'));
+      }
+    }
+    else {
+      form_set_error(ASELECT_NEW_IDENTITY . '_identity', t('Illegal characters in the name of the new ASelect identity. The name is restricted to alphanumeric characters and underscores only.'));
+    }
+  }
+}
+
+/**
+ * Prepare the edit form data for saving to the user
+ *
+ * @param $form_state
+ *   The current state of the edit form
+ */
+function aselect_user_form_submit(&$form_state) {
+  // Update results to set new authmaps
+  foreach ($form_state as $name => $value) {
+    if (substr($name, 0, 7) === 'aselect' && substr($name, 0, strlen(ASELECT_NEW_IDENTITY)) !== ASELECT_NEW_IDENTITY) {
+      $form_state['auth_' . $name] = $value;
+      // Clean up $edit
+      unset($form_state[$name]);
+    }
+  }
+  // Set selected authmaps for removal
+  foreach ($form_state['authmap_remove'] as $authfield) {
+    $form_state['auth_' . $authfield] = FALSE;
+  }
+}
+
+/**
+ * Theme the fieldset that contains the ASelect identities
+ *
+ * @param $form
+ *   The fieldset
+ * @return
+ *   The themed fieldset
+ */
+function theme_aselect_identities_table($form) {
+  $header = array(
+    theme('table_select_header_cell'),
+    t('Identity name'),
+    t('Identitiy'),
+  );
+  $rows = array();
+
+  if (isset($form['identity']) && is_array($form['identity'])) {
+    foreach (element_children($form['identity']) as $authfield) {
+      $form['identity'][$authfield]['#size'] = 40;
+      $form['authname'][$authfield]['#size'] = 40;
+      $rows[] = array(
+        drupal_render($form['authmap_remove'][$authfield]),
+        drupal_render($form['identity'][$authfield]),
+        drupal_render($form['authname'][$authfield]),
+      );
+    }
+  }
+
+  $rows[] = array(
+    '',
+    drupal_render($form[ASELECT_NEW_IDENTITY . '_identity']),
+    drupal_render($form[ASELECT_NEW_IDENTITY . '_authname']),
+  );
+
+  $output  = theme('table', $header, $rows);
+  $output .= drupal_render($form);
+
+  return $output;
 }
