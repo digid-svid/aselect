@@ -93,12 +93,10 @@ function aselect_user ($op, &$edit, &$account, $category = 'account') {
 
     case 'validate':
       aselect_user_form_validate(&$edit);
-      dpm($edit, 'user-edit-validate');
       break;
 
     case 'submit':
       aselect_user_form_submit(&$edit);
-      dpm($edit, 'user-edit-submit');
       break;
 
     case 'load':
