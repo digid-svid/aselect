@@ -92,11 +92,15 @@ function aselect_user ($op, &$edit, &$account, $category = 'account') {
       return aselect_user_form($account, $category);
 
     case 'validate':
-      aselect_user_form_validate(&$edit);
+      if ($category === 'account') {
+        aselect_user_form_validate(&$edit);
+      }
       break;
 
     case 'submit':
-      aselect_user_form_submit(&$edit);
+      if ($category === 'account') {
+        aselect_user_form_submit(&$edit);
+      }
       break;
 
     case 'load':
